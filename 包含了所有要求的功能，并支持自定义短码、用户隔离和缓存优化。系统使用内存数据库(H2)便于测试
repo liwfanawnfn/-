@@ -1,0 +1,448 @@
+//maven配置
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <groupId>com.example</groupId>
+    <artifactId>short-url-service</artifactId>
+    <version>1.0.0</version>
+    <packaging>jar</packaging>
+
+    <parent>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <version>3.2.4</version>
+        <relativePath/>
+    </parent>
+
+    <properties>
+        <java.version>17</java.version>
+    </properties>
+
+    <dependencies>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-web</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-jpa</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.h2database</groupId>
+            <artifactId>h2</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-cache</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.google.guava</groupId>
+            <artifactId>guava</artifactId>
+            <version>31.1-jre</version>
+        </dependency>
+        <dependency>
+            <groupId>org.hibernate.validator</groupId>
+            <artifactId>hibernate-validator</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springdoc</groupId>
+            <artifactId>springdoc-openapi-starter-webmvc-ui</artifactId>
+            <version>2.5.0</version>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+            </plugin>
+        </plugins>
+    </build>
+</project>
+
+
+
+//ShortUrlApplication.java (主启动类)
+package com.example.shorturl;
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.cache.annotation.EnableCaching;
+@SpringBootApplication
+@EnableCaching
+public class ShortUrlApplication {
+    public static void main(String[] args) {
+        SpringApplication.run(ShortUrlApplication.class, args);
+    }
+}
+
+
+//ShortUrl.java (实体类)
+package com.example.shorturl.entity;
+
+import jakarta.persistence.*;
+import java.time.LocalDateTime;
+
+@Entity
+public class ShortUrl {
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
+    
+    @Column(nullable = false, length = 2083)
+    private String originalUrl;
+    
+    @Column(unique = true, nullable = false)
+    private String shortCode;
+    
+    @Column(nullable = false)
+    private String userId;
+    
+    private LocalDateTime createdAt = LocalDateTime.now();
+
+    // Getters and setters
+    public Long getId() {
+        return id;
+    }
+
+    public void setId(Long id) {
+        this.id = id;
+    }
+
+    public String getOriginalUrl() {
+        return originalUrl;
+    }
+
+    public void setOriginalUrl(String originalUrl) {
+        this.originalUrl = originalUrl;
+    }
+
+    public String getShortCode() {
+        return shortCode;
+    }
+
+    public void setShortCode(String shortCode) {
+        this.shortCode = shortCode;
+    }
+
+    public String getUserId() {
+        return userId;
+    }
+
+    public void setUserId(String userId) {
+        this.userId = userId;
+    }
+
+    public LocalDateTime getCreatedAt() {
+        return createdAt;
+    }
+
+    public void setCreatedAt(LocalDateTime createdAt) {
+        this.createdAt = createdAt;
+    }
+}
+
+
+
+//ShortUrlRepository.java (数据访问层)
+package com.example.shorturl.repository;
+
+import com.example.shorturl.entity.ShortUrl;
+import org.springframework.data.jpa.repository.JpaRepository;
+
+import java.util.List;
+import java.util.Optional;
+
+public interface ShortUrlRepository extends JpaRepository<ShortUrl, Long> {
+    Optional<ShortUrl> findByShortCode(String shortCode);
+    List<ShortUrl> findByUserId(String userId);
+    Optional<ShortUrl> findByShortCodeAndUserId(String shortCode, String userId);
+    boolean existsByShortCode(String shortCode);
+}
+
+
+//ShortCodeGenerator.java (短码生成服务)
+package com.example.shorturl.service;
+
+import org.springframework.stereotype.Service;
+
+import java.security.SecureRandom;
+
+@Service
+public class ShortCodeGenerator {
+    private static final String BASE62 = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+    private static final int DEFAULT_LENGTH = 6;
+    private static final SecureRandom random = new SecureRandom();
+
+    public String generate() {
+        return generateRandom(DEFAULT_LENGTH);
+    }
+
+    private String generateRandom(int length) {
+        StringBuilder sb = new StringBuilder(length);
+        for (int i = 0; i < length; i++) {
+            sb.append(BASE62.charAt(random.nextInt(BASE62.length())));
+        }
+        return sb.toString();
+    }
+}
+
+
+//ShortUrlService.java (业务逻辑层)
+package com.example.shorturl.service;
+
+import com.example.shorturl.entity.ShortUrl;
+import com.example.shorturl.exception.ResourceNotFoundException;
+import com.example.shorturl.exception.ShortCodeConflictException;
+import com.example.shorturl.repository.ShortUrlRepository;
+import com.google.common.cache.Cache;
+import com.google.common.cache.CacheBuilder;
+import org.springframework.lang.Nullable;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.util.List;
+import java.util.Optional;
+import java.util.concurrent.TimeUnit;
+
+@Service
+@Transactional
+public class ShortUrlService {
+    private final ShortUrlRepository repository;
+    private final ShortCodeGenerator codeGenerator;
+    private final Cache<String, String> cache = CacheBuilder.newBuilder()
+            .maximumSize(10_000)
+            .expireAfterWrite(1, TimeUnit.HOURS)
+            .build();
+
+    public ShortUrlService(ShortUrlRepository repository, ShortCodeGenerator codeGenerator) {
+        this.repository = repository;
+        this.codeGenerator = codeGenerator;
+    }
+
+    public ShortUrl createShortUrl(String originalUrl, String userId, @Nullable String customCode) {
+        String shortCode = (customCode != null && !customCode.isEmpty()) ? customCode : codeGenerator.generate();
+
+        if (repository.existsByShortCode(shortCode)) {
+            throw new ShortCodeConflictException("Short code already exists");
+        }
+
+        ShortUrl entity = new ShortUrl();
+        entity.setOriginalUrl(originalUrl);
+        entity.setShortCode(shortCode);
+        entity.setUserId(userId);
+        return repository.save(entity);
+    }
+
+    public String getOriginalUrl(String shortCode) {
+        String cached = cache.getIfPresent(shortCode);
+        if (cached != null) {
+            return cached;
+        }
+
+        ShortUrl shortUrl = repository.findByShortCode(shortCode)
+                .orElseThrow(() -> new ResourceNotFoundException("Short URL not found for code: " + shortCode));
+
+        cache.put(shortCode, shortUrl.getOriginalUrl());
+        return shortUrl.getOriginalUrl();
+    }
+
+    public List<ShortUrl> getUserUrls(String userId) {
+        return repository.findByUserId(userId);
+    }
+
+    public void deleteUserUrl(String userId, String shortCode) {
+        Optional<ShortUrl> optionalShortUrl = repository.findByShortCodeAndUserId(shortCode, userId);
+        if (optionalShortUrl.isPresent()) {
+            repository.delete(optionalShortUrl.get());
+            cache.invalidate(shortCode);
+        }
+    }
+}
+
+
+
+//ShortUrlController.java (控制器)
+package com.example.shorturl.controller;
+
+import com.example.shorturl.entity.ShortUrl;
+import com.example.shorturl.service.ShortUrlService;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.Parameter;
+import io.swagger.v3.oas.annotations.tags.Tag;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.*;
+
+import java.net.URI;
+import java.util.Collections;
+import java.util.List;
+import java.util.Map;
+
+@RestController
+@RequestMapping("/api")
+@Tag(name = "Short URL API", description = "API for creating and managing short URLs")
+public class ShortUrlController {
+    private final ShortUrlService service;
+
+    public ShortUrlController(ShortUrlService service) {
+        this.service = service;
+    }
+
+    @PostMapping("/shorten")
+    @Operation(summary = "Create a short URL", description = "Creates a short URL from a long URL")
+    public ResponseEntity<Map<String, String>> createShortUrl(
+            @io.swagger.v3.oas.annotations.parameters.RequestBody(description = "Request body containing URL details")
+            @RequestBody CreateShortUrlRequest request,
+            @Parameter(description = "User ID for ownership", required = true)
+            @RequestHeader("X-User-Id") String userId) {
+        
+        ShortUrl entity = service.createShortUrl(
+                request.getOriginalUrl(),
+                userId,
+                request.getCustomCode());
+        
+        return ResponseEntity.ok(Collections.singletonMap(
+                "shortUrl", "https://short.url/" + entity.getShortCode()));
+    }
+
+    @GetMapping("/{shortCode}")
+    @Operation(summary = "Redirect to original URL", description = "Redirects to the original URL using the short code")
+    public ResponseEntity<Void> redirect(
+            @Parameter(description = "Short code for redirection", required = true)
+            @PathVariable String shortCode) {
+        
+        String originalUrl = service.getOriginalUrl(shortCode);
+        return ResponseEntity.status(HttpStatus.FOUND)
+                .location(URI.create(originalUrl))
+                .build();
+    }
+
+    @GetMapping("/urls")
+    @Operation(summary = "Get user's URLs", description = "Retrieves all short URLs created by the user")
+    public List<ShortUrl> getUserUrls(
+            @Parameter(description = "User ID for ownership", required = true)
+            @RequestHeader("X-User-Id") String userId) {
+        
+        return service.getUserUrls(userId);
+    }
+
+    @DeleteMapping("/{shortCode}")
+    @Operation(summary = "Delete a short URL", description = "Deletes a short URL owned by the user")
+    public ResponseEntity<Void> deleteUrl(
+            @Parameter(description = "Short code to delete", required = true)
+            @PathVariable String shortCode,
+            @Parameter(description = "User ID for ownership", required = true)
+            @RequestHeader("X-User-Id") String userId) {
+        
+        service.deleteUserUrl(userId, shortCode);
+        return ResponseEntity.noContent().build();
+    }
+    
+    public static class CreateShortUrlRequest {
+        private String originalUrl;
+        private String customCode;
+
+        // Getters and setters
+        public String getOriginalUrl() {
+            return originalUrl;
+        }
+
+        public void setOriginalUrl(String originalUrl) {
+            this.originalUrl = originalUrl;
+        }
+
+        public String getCustomCode() {
+            return customCode;
+        }
+
+        public void setCustomCode(String customCode) {
+            this.customCode = customCode;
+        }
+    }
+}
+
+
+//异常处理类
+// ResourceNotFoundException.java
+package com.example.shorturl.exception;
+
+public class ResourceNotFoundException extends RuntimeException {
+    public ResourceNotFoundException(String message) {
+        super(message);
+    }
+}
+
+// ShortCodeConflictException.java
+package com.example.shorturl.exception;
+
+public class ShortCodeConflictException extends RuntimeException {
+    public ShortCodeConflictException(String message) {
+        super(message);
+    }
+}
+
+// GlobalExceptionHandler.java
+package com.example.shorturl.exception;
+
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.ControllerAdvice;
+import org.springframework.web.bind.annotation.ExceptionHandler;
+import org.springframework.web.servlet.mvc.method.annotation.ResponseEntityExceptionHandler;
+
+@ControllerAdvice
+public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
+
+    @ExceptionHandler(ResourceNotFoundException.class)
+    public ResponseEntity<Object> handleResourceNotFound(ResourceNotFoundException ex) {
+        return new ResponseEntity<>(Collections.singletonMap("error", ex.getMessage()), 
+                                   HttpStatus.NOT_FOUND);
+    }
+
+    @ExceptionHandler(ShortCodeConflictException.class)
+    public ResponseEntity<Object> handleShortCodeConflict(ShortCodeConflictException ex) {
+        return new ResponseEntity<>(Collections.singletonMap("error", ex.getMessage()), 
+                                   HttpStatus.CONFLICT);
+    }
+
+    @ExceptionHandler(Exception.class)
+    public ResponseEntity<Object> handleGlobalException(Exception ex) {
+        return new ResponseEntity<>(Collections.singletonMap("error", "Internal server error"), 
+                                   HttpStatus.INTERNAL_SERVER_ERROR);
+    }
+}
+
+
+
+
+//application.properties (配置文件)
+# Server port
+server.port=8080
+
+# H2 Database
+spring.datasource.url=jdbc:h2:mem:testdb
+spring.datasource.driverClassName=org.h2.Driver
+spring.datasource.username=sa
+spring.datasource.password=
+spring.jpa.database-platform=org.hibernate.dialect.H2Dialect
+
+# H2 Console
+spring.h2.console.enabled=true
+spring.h2.console.path=/h2-console
+
+# Show SQL
+spring.jpa.show-sql=true
+spring.jpa.properties.hibernate.format_sql=true
+
+# Cache configuration
+spring.cache.type=simple
